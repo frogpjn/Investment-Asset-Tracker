@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>투자 자산 트래커</title>
+  
+  <!-- 모듈 참조 오류 방지를 위한 Import Map -->
+  <script type="importmap">
+    {
+      "imports": {
+        "lodash/": "https://esm.sh/lodash/",
+        "lodash": "https://esm.sh/lodash"
+      }
+    }
+  </script>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Babel (JSX를 브라우저에서 읽을 수 있게 변환) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <style>
+    /* 커스텀 스크롤바 & 애니메이션 스타일 */
+    .custom-scrollbar::-webkit-scrollbar { height: 8px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    
+    @keyframes bounce-short {
+      0%, 100% { transform: translate(-50%, 0); }
+      50% { transform: translate(-50%, -5px); }
+    }
+    .animate-bounce-short { animation: bounce-short 0.3s ease-in-out; }
+
+    /* 가로 모드 전용 디자인 최적화 */
+    @media (orientation: landscape) and (max-height: 500px) {
+      .landscape-modal-padding {
+        padding: 0.5rem !important;
+      }
+      .landscape-header-padding {
+        padding-top: 0.5rem !important;
+        padding-bottom: 0.5rem !important;
+      }
+      .landscape-chart-height {
+        height: 180px !important;
+        min-height: 180px !important;
+      }
+      .landscape-footer-padding {
+        padding: 0.5rem !important;
+      }
+      .landscape-modal-max-height {
+        max-height: 98vh !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <!-- 초기 정적 로딩 화면 -->
+    <div style="height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #f8fafc; font-family: sans-serif;">
+      <div style="width: 40px; height: 40px; border: 4px solid #e2e8f0; border-top: 4px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+      <p style="margin-top: 16px; color: #64748b; font-weight: 500;">앱을 초기화하는 중...</p>
+      <style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>
+    </div>
+  </div>
+
+  <!-- React 및 앱 로직 (ES Modules 기반) -->
+  <script type="text/babel" data-type="module">
+    import React, { useState, useEffect, useMemo, useCallback, useRef } from 'https://esm.sh/react@18.2.0';
+    import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+    import { 
+      Plus, Trash2, Download, Calculator, TrendingUp, Wallet, 
+      ArrowDownCircle, ArrowUpCircle, Layers, X, BarChart3,
+      Coins, Cloud, Loader2, Check, Percent, Copy, Sparkles, Upload, Save, Info, FileCode, AlertCircle, Image, Calendar
+    } from 'https://esm.sh/lucide-react@0.292.0?bundle&deps=react@18.2.0';
+    import { 
+      LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, 
+      ResponsiveContainer, Legend, AreaChart, Area, ReferenceLine
+    } from 'https://esm.sh/recharts@2.10.3?bundle&deps=react@18.2.0,react-dom@18.2.0';
+    import { toJpeg } from 'https://esm.sh/html-to-image@1.11.11';
+    
+    // Firebase Imports
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+    import { getFirestore, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+
+    // 앱 버전 상수
+    const APP_VERSION = "v1.1.4";
+
+    // Firebase 로컬 대응 초기화 로직
+    let app, auth, db;
+    let isFirebaseEnabled = false;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'stock-return-tracker-local';
+
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+      try {
+        const firebaseConfig = JSON.parse(__firebase_config);
+        app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+        isFirebaseEnabled = true;
+      } catch (err) {
+        console.error("Firebase 초기화 오류:", err);
+      }
+    }
+
+    const App = () => {
+      const [user, setUser] = useState(null);
+      const [isLoading, setIsLoading] = useState(true);
+      
+      const initialId = `acc-1`;
+      const initialData = [{
+        id: initialId,
+        name: '메인 계좌',
+        currency: 'KRW',
+        initialInvestment: '10000000',
+        rows: [{
+          id: 1,
+          date: new Date().toISOString().split('T')[0],
+          stockValue: '10000000',
+          cash: '2000000',
+          deposit: '0',
+          withdrawal: '0',
+        }]
+      }];
+
+      const [accounts, setAccounts] = useState(initialData);
+      const [activeAccountId, setActiveAccountId] = useState(initialId);
+      const [isSyncing, setIsSyncing] = useState(false);
+      const [toastMsg, setToastMsg] = useState('');
+      const [showManual, setShowManual] = useState(false);
+      const [showChart, setShowChart] = useState(false);
+
+      const [fileNumber, setFileNumber] = useState(1);
+      const fileInputRef = useRef(null);
+      const chartRef = useRef(null);
+
+      // 차트 기간 필터 상태
+      const [chartStartDate, setChartStartDate] = useState('');
+      const [chartEndDate, setChartEndDate] = useState('');
+
+      const currencyConfig = {
+        KRW: { symbol: '₩', suffix: '원', locale: 'ko-KR', decimals: 0 },
+        USD: { symbol: '$', suffix: '달러', locale: 'en-US', decimals: 2 }
+      };
+
+      useEffect(() => {
+        const timer = setTimeout(() => {
+          if (isLoading) setIsLoading(false);
+        }, 8000);
+        return () => clearTimeout(timer);
+      }, [isLoading]);
+
+      useEffect(() => {
+        if (!isFirebaseEnabled) {
+          setIsLoading(false);
+          return;
+        }
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (err) {
+            setIsLoading(false);
+          }
+        };
+        initAuth();
+        const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+        return () => unsubscribe();
+      }, []);
+
+      useEffect(() => {
+        if (!isFirebaseEnabled || !user) return;
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'userPortfolio', 'main');
+        const unsubscribe = onSnapshot(docRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data.accounts) {
+              const migratedAccounts = data.accounts.map(acc => ({
+                ...acc,
+                currency: acc.currency || data.currency || 'KRW',
+                initialInvestment: acc.initialInvestment !== undefined ? acc.initialInvestment : (acc.rows && acc.rows[0] ? (toNum(acc.rows[0].stockValue) + toNum(acc.rows[0].cash)).toString() : '0')
+              }));
+              setAccounts(migratedAccounts);
+            }
+            if (data.activeAccountId) setActiveAccountId(data.activeAccountId);
+          }
+          setIsLoading(false);
+        }, () => setIsLoading(false));
+        return () => unsubscribe();
+      }, [user]);
+
+      const saveToCloud = useCallback(async (newAccounts, newActiveId) => {
+        if (!isFirebaseEnabled || !user) return;
+        setIsSyncing(true);
+        try {
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'userPortfolio', 'main');
+          await setDoc(docRef, {
+            accounts: newAccounts || accounts,
+            activeAccountId: newActiveId || activeAccountId,
+            lastUpdated: new Date().toISOString()
+          }, { merge: true });
+        } catch (err) {
+          console.error("저장 오류:", err);
+        } finally {
+          setTimeout(() => setIsSyncing(false), 500);
+        }
+      }, [user, accounts, activeAccountId]);
+
+      const activeAccount = useMemo(() => {
+        if (!accounts || accounts.length === 0) return null;
+        return accounts.find(acc => acc.id === activeAccountId) || accounts[0];
+      }, [accounts, activeAccountId]);
+
+      const currentCurrency = activeAccount?.currency || 'KRW';
+      const currentSymbol = currencyConfig[currentCurrency]?.symbol || '₩';
+
+      const toNum = (val) => {
+        if (val === undefined || val === null || val === '') return 0;
+        const clean = val.toString().replace(/,/g, '');
+        const num = parseFloat(clean);
+        return isNaN(num) ? 0 : num;
+      };
+
+      const formatDisplayNumber = (num) => {
+        const config = currencyConfig[currentCurrency] || currencyConfig.KRW;
+        return new Intl.NumberFormat(config.locale, {
+          minimumFractionDigits: config.decimals,
+          maximumFractionDigits: config.decimals,
+          useGrouping: true
+        }).format(num);
+      };
+
+      const formatInputValue = (val) => {
+        if (val === undefined || val === null || val === '') return '';
+        const cleanVal = val.toString().replace(/,/g, '');
+        const parts = cleanVal.split('.');
+        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        return parts.length > 2 ? parts[0] + '.' + parts[1] : parts.join('.');
+      };
+
+      const getFormattedFileName = (extension, shouldIncrement = false) => {
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        const numToUse = fileNumber;
+        if (shouldIncrement) setFileNumber(prev => prev + 1);
+        const numStr = String(numToUse).padStart(4, '0');
+        return `my_asset_result_${yyyy}_${mm}_${dd}_${numStr}.${extension}`;
+      };
+
+      const updateAccountsAndSave = (nextAccounts, nextActiveId = activeAccountId) => {
+        setAccounts(nextAccounts);
+        saveToCloud(nextAccounts, nextActiveId);
+      };
+
+      const addAccount = () => {
+        const newId = `acc-${Date.now()}`;
+        const newAccount = {
+          id: newId, name: `계좌 ${accounts.length + 1}`, currency: 'KRW', initialInvestment: '0', 
+          rows: [{ id: Date.now(), date: new Date().toISOString().split('T')[0], stockValue: '0', cash: '0', deposit: '0', withdrawal: '0' }]
+        };
+        const nextAccounts = [...accounts, newAccount];
+        setActiveAccountId(newId);
+        updateAccountsAndSave(nextAccounts, newId);
+      };
+
+      const deleteAccount = (id) => {
+        if (accounts.length > 1) {
+          const nextAccounts = accounts.filter(acc => acc.id !== id);
+          const nextActiveId = activeAccountId === id ? nextAccounts[0].id : activeAccountId;
+          setActiveAccountId(nextActiveId);
+          updateAccountsAndSave(nextAccounts, nextActiveId);
+        }
+      };
+
+      const changeAccountCurrency = (newCurrency) => {
+        if (!activeAccount) return;
+        const formatVal = (v) => newCurrency === 'USD' ? toNum(v).toFixed(2) : toNum(v).toString();
+        const nextAccounts = accounts.map(acc => {
+          if (acc.id === activeAccountId) {
+            return { 
+              ...acc, currency: newCurrency, initialInvestment: formatVal(acc.initialInvestment),
+              rows: acc.rows.map(r => ({ ...r, stockValue: formatVal(r.stockValue), cash: formatVal(r.cash), deposit: formatVal(r.deposit), withdrawal: formatVal(r.withdrawal) }))
+            };
+          }
+          return acc;
+        });
+        updateAccountsAndSave(nextAccounts);
+      };
+
+      const addRow = () => {
+        if (!activeAccount) return;
+        const lastRow = activeAccount.rows[activeAccount.rows.length - 1];
+        const newDate = lastRow ? lastRow.date : new Date().toISOString().split('T')[0];
+        const zeroStr = currentCurrency === 'USD' ? '0.00' : '0';
+        const newRow = { id: Date.now(), date: newDate, stockValue: lastRow ? lastRow.stockValue : zeroStr, cash: lastRow ? lastRow.cash : zeroStr, deposit: zeroStr, withdrawal: zeroStr };
+        const nextAccounts = accounts.map(acc => acc.id === activeAccountId ? { ...acc, rows: [...acc.rows, newRow] } : acc);
+        updateAccountsAndSave(nextAccounts);
+      };
+
+      const deleteRow = (rowId) => {
+        if (!activeAccount || activeAccount.rows.length <= 1) return;
+        const nextAccounts = accounts.map(acc => acc.id === activeAccountId ? { ...acc, rows: acc.rows.filter(r => r.id !== rowId) } : acc);
+        updateAccountsAndSave(nextAccounts);
+      };
+
+      const handleRowChange = (rowId, field, val) => {
+        const nextAccounts = accounts.map(acc => acc.id === activeAccountId ? { ...acc, rows: acc.rows.map(r => r.id === rowId ? { ...r, [field]: val } : r) } : acc);
+        updateAccountsAndSave(nextAccounts);
+      };
+
+      const handleBlur = (rowId, field, val) => {
+        const numVal = toNum(val);
+        const finalVal = currentCurrency === 'USD' ? numVal.toFixed(2) : numVal.toString();
+        handleRowChange(rowId, field, finalVal);
+      };
+
+      const handleInitialInvestmentChange = (val) => {
+        if (!activeAccount) return;
+        const nextAccounts = accounts.map(acc => acc.id === activeAccountId ? { ...acc, initialInvestment: val } : acc);
+        updateAccountsAndSave(nextAccounts);
+      };
+
+      const handleInitialInvestmentBlur = (val) => {
+        const numVal = toNum(val);
+        const finalVal = currentCurrency === 'USD' ? numVal.toFixed(2) : numVal.toString();
+        handleInitialInvestmentChange(finalVal);
+      };
+
+      const processedRows = useMemo(() => {
+        if (!activeAccount) return [];
+        let cumulativeInvestment = toNum(activeAccount.initialInvestment);
+        const initialInvestment = toNum(activeAccount.initialInvestment);
+        return activeAccount.rows.map((row) => {
+          const totalAsset = toNum(row.stockValue) + toNum(row.cash);
+          cumulativeInvestment += (toNum(row.deposit) - toNum(row.withdrawal));
+          const principalGrowthRate = initialInvestment !== 0 ? ((cumulativeInvestment - initialInvestment) / initialInvestment) * 100 : 0;
+          const assetGrowthRate = initialInvestment !== 0 ? ((totalAsset - initialInvestment) / initialInvestment) * 100 : 0;
+          return { ...row, totalAsset, cumulativeInvestment, cashValue: toNum(row.cash), principalGrowthRate, assetGrowthRate };
+        });
+      }, [activeAccount]);
+
+      // 차트 전용 필터링된 데이터
+      const filteredChartData = useMemo(() => {
+        if (!processedRows.length) return [];
+        return processedRows.filter(row => {
+          const rowDate = row.date;
+          const startPass = !chartStartDate || rowDate >= chartStartDate;
+          const endPass = !chartEndDate || rowDate <= chartEndDate;
+          return startPass && endPass;
+        });
+      }, [processedRows, chartStartDate, chartEndDate]);
+
+      useEffect(() => {
+        if (showChart && processedRows.length > 0) {
+          setChartStartDate(processedRows[0].date);
+          setChartEndDate(processedRows[processedRows.length - 1].date);
+        }
+      }, [showChart, processedRows.length]);
+
+      const latestData = useMemo(() => {
+        if (processedRows.length === 0) return { totalAsset: 0, cumulativeInvestment: 0, principalGrowthRate: 0, assetGrowthRate: 0 };
+        return processedRows[processedRows.length - 1];
+      }, [processedRows]);
+
+      const chartMinWidth = Math.max(800, filteredChartData.length * 80);
+
+      const exportCSV = () => {
+        if (!activeAccount) return;
+        const headers = ["날짜", "주식", "현금", "입금", "출금", "원금", "원금(%)", "자산", "자산(%)"];
+        const csvContent = [headers.join(","), ...processedRows.map(r => [r.date, toNum(r.stockValue), toNum(r.cash), toNum(r.deposit), toNum(r.withdrawal), r.cumulativeInvestment, r.principalGrowthRate, r.totalAsset, r.assetGrowthRate].join(","))].join("\n");
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = getFormattedFileName('csv', false);
+        link.click();
+        setToastMsg(`CSV 저장이 완료되었습니다.`);
+        setTimeout(() => setToastMsg(''), 3000);
+      };
+
+      const copyForGoogleSheets = () => {
+        if (!activeAccount) return;
+        const headers = ["날짜", "주식", "현금", "입금", "출금", "원금", "원금(%)", "자산", "자산(%)"];
+        const tsvRows = processedRows.map((r, index) => {
+          const rowNum = index + 2; 
+          const initialInvNum = toNum(activeAccount.initialInvestment);
+          const cumulativeInvestmentFormula = index === 0 ? `=${initialInvNum}+D${rowNum}-E${rowNum}` : `=F${rowNum - 1}+D${rowNum}-E${rowNum}`;
+          const principalGrowthRateFormula = initialInvNum === 0 ? `0` : `=IFERROR(((F${rowNum}-${initialInvNum})/${initialInvNum})*100, 0)`;
+          const totalAssetFormula = `=B${rowNum}+C${rowNum}`;
+          const assetGrowthRateFormula = initialInvNum === 0 ? `0` : `=IFERROR(((H${rowNum}-${initialInvNum})/${initialInvNum})*100, 0)`;
+          return [r.date, toNum(r.stockValue), toNum(r.cash), toNum(r.deposit), toNum(r.withdrawal), cumulativeInvestmentFormula, principalGrowthRateFormula, totalAssetFormula, assetGrowthRateFormula].join("\t");
+        });
+        const tsvContent = [headers.join("\t"), ...tsvRows].join("\n");
+        const textArea = document.createElement("textarea");
+        textArea.value = tsvContent;
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+          document.execCommand('copy');
+          setToastMsg('데이터가 복사되었습니다! 시트에 붙여넣으세요.');
+          setTimeout(() => setToastMsg(''), 3000);
+        } catch (err) { setToastMsg('복사에 실패했습니다.'); }
+        document.body.removeChild(textArea);
+      };
+
+      const exportJSON = () => {
+        if (!accounts || accounts.length === 0) return;
+        const dataToSave = { version: APP_VERSION, accounts, activeAccountId, exportedAt: new Date().toISOString() };
+        const blob = new Blob([JSON.stringify(dataToSave, null, 2)], { type: 'application/json' });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = getFormattedFileName('json', true);
+        link.click();
+        setToastMsg('데이터 백업(JSON)이 완료되었습니다.');
+        setTimeout(() => setToastMsg(''), 3000);
+      };
+
+      const importJSON = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const match = file.name.match(/_(\d+)\.(json|csv)$/i);
+        if (match && match[1]) setFileNumber(parseInt(match[1]) + 1);
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const data = JSON.parse(event.target.result);
+            if (data.accounts) {
+              setAccounts(data.accounts);
+              if (data.activeAccountId) setActiveAccountId(data.activeAccountId);
+              saveToCloud(data.accounts, data.activeAccountId || activeAccountId);
+              setToastMsg('데이터를 성공적으로 불러왔습니다.');
+            }
+          } catch (err) { setToastMsg('오류가 발생했습니다.'); }
+          setTimeout(() => setToastMsg(''), 3000);
+          e.target.value = null; 
+        };
+        reader.readAsText(file);
+      };
+
+      const downloadChartImage = useCallback(async () => {
+        if (!chartRef.current) return;
+        setToastMsg('이미지를 생성하는 중...');
+        try {
+          const options = {
+            backgroundColor: '#ffffff',
+            quality: 0.95,
+            pixelRatio: 2,
+            width: chartRef.current.scrollWidth,
+            height: chartRef.current.scrollHeight
+          };
+          const dataUrl = await toJpeg(chartRef.current, options);
+          const link = document.createElement('a');
+          const today = new Date();
+          const fileName = `asset_chart_${today.getFullYear()}_${String(today.getMonth() + 1).padStart(2, '0')}_${String(today.getDate()).padStart(2, '0')}.jpg`;
+          link.download = fileName;
+          link.href = dataUrl;
+          link.click();
+          setToastMsg('이미지 저장이 완료되었습니다.');
+        } catch (err) {
+          setToastMsg('이미지 저장에 실패했습니다.');
+        }
+        setTimeout(() => setToastMsg(''), 3000);
+      }, []);
+
+      if (isLoading) {
+        return (
+          <div className="min-h-screen flex items-center justify-center bg-slate-50">
+            <Loader2 className="animate-spin text-blue-600" size={48} />
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-900 relative">
+          <div className="max-w-6xl mx-auto">
+            {/* Header */}
+            <div className="flex flex-col mb-6 gap-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2 text-slate-800">
+                  <TrendingUp className="text-blue-600 w-6 h-6 md:w-8 md:h-8" /> 
+                  <h1 className="text-xl md:text-3xl font-bold">투자 자산 트래커</h1>
+                  <div className="flex items-center gap-1 ml-1">
+                    <span className="text-[10px] md:text-sm bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full shadow-sm">{APP_VERSION}</span>
+                    <button onClick={() => setShowManual(true)} className="p-1 text-slate-400 hover:text-blue-600 transition-colors" title="이용 가이드"><Info size={18} className="md:w-5 md:h-5" /></button>
+                  </div>
+                </div>
+                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] md:text-xs font-semibold ${!isFirebaseEnabled ? 'bg-slate-200 text-slate-600' : isSyncing ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                  {isSyncing ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />} {!isFirebaseEnabled ? '로컬 모드' : isSyncing ? '저장 중...' : '자동 저장됨'}
+                </div>
+              </div>
+            </div>
+            
+            {/* Action Buttons */}
+            <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 mb-6">
+              <div className="col-span-2 sm:col-auto bg-white p-1 border border-slate-200 rounded-lg flex shadow-sm mr-1">
+                  <button onClick={() => changeAccountCurrency('KRW')} className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-xs font-bold transition-colors ${currentCurrency === 'KRW' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>KRW</button>
+                  <button onClick={() => changeAccountCurrency('USD')} className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-xs font-bold transition-colors ${currentCurrency === 'USD' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>USD</button>
+              </div>
+              <button onClick={() => setShowChart(true)} className="flex items-center justify-center gap-2 bg-indigo-50 border border-indigo-200 text-indigo-700 px-3 py-2.5 rounded-lg shadow-sm font-bold text-xs hover:bg-indigo-100 transition-colors"><BarChart3 size={16} /> 차트 보기</button>
+              <button onClick={copyForGoogleSheets} className="flex items-center justify-center gap-2 bg-green-50 border border-green-200 text-green-700 px-3 py-2.5 rounded-lg shadow-sm font-medium text-xs hover:bg-green-100 transition-colors"><Copy size={16} /> 시트로 복사</button>
+              
+              <input type="file" accept=".json" ref={fileInputRef} onChange={importJSON} className="hidden" />
+              <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 bg-white border border-slate-200 px-3 py-2.5 rounded-lg shadow-sm text-xs font-medium hover:bg-slate-50 transition-colors text-slate-700"><Upload size={16} /> 불러오기</button>
+              <button onClick={exportJSON} className="flex items-center justify-center gap-2 bg-white border border-slate-200 px-3 py-2.5 rounded-lg shadow-sm text-xs font-medium hover:bg-slate-50 transition-colors text-slate-700"><Save size={16} /> 백업하기</button>
+              
+              <button onClick={exportCSV} className="hidden md:flex items-center justify-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg shadow-sm text-xs font-medium hover:bg-slate-50 transition-colors text-slate-700"><Download size={16} /> CSV 저장</button>
+            </div>
+
+            {/* Account Tabs */}
+            <div className="flex overflow-x-auto custom-scrollbar gap-2 mb-6 pb-1">
+              {accounts.map(acc => (
+                <div key={acc.id} onClick={() => { setActiveAccountId(acc.id); saveToCloud(accounts, acc.id); }} className={`flex items-center gap-2 px-4 py-2 rounded-full cursor-pointer border whitespace-nowrap transition-all ${activeAccountId === acc.id ? 'bg-blue-600 text-white border-blue-600 shadow-md' : 'bg-white text-slate-600 border-slate-200 hover:border-blue-300'}`}>
+                  <Layers size={14} /><input type="text" value={acc.name || ''} onChange={(e) => { const next = accounts.map(a => a.id === acc.id ? { ...a, name: e.target.value } : a); setAccounts(next); saveToCloud(next, activeAccountId); }} onClick={(e) => e.stopPropagation()} className="bg-transparent border-none outline-none text-xs md:text-sm font-medium w-20 md:w-24 text-current focus:ring-0" />
+                  {accounts.length > 1 && <X size={14} className="hover:text-red-300 ml-1 shrink-0" onClick={(e) => { e.stopPropagation(); deleteAccount(acc.id); }} />}
+                </div>
+              ))}
+              <button onClick={addAccount} className="flex items-center justify-center w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-500 shadow-sm shrink-0 hover:bg-slate-100"><Plus size={16} /></button>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+              <Card icon={<Calculator size={14}/>} label="원금" value={`${currentSymbol}${formatDisplayNumber(latestData.cumulativeInvestment)}`} subValue={`${latestData.principalGrowthRate > 0 ? '+' : ''}${latestData.principalGrowthRate.toFixed(2)}%`} subColor={latestData.principalGrowthRate > 0 ? 'text-indigo-500' : 'text-pink-500'} />
+              <Card icon={<Wallet size={14}/>} label="자산" value={`${currentSymbol}${formatDisplayNumber(latestData.totalAsset)}`} subValue={`${latestData.assetGrowthRate > 0 ? '+' : ''}${latestData.assetGrowthRate.toFixed(2)}%`} subColor={latestData.assetGrowthRate > 0 ? 'text-red-500' : 'text-blue-500'} />
+              <Card icon={<ArrowUpCircle size={14}/>} label="누적 손익" value={`${latestData.totalAsset - latestData.cumulativeInvestment >= 0 ? '+' : ''}${currentSymbol}${formatDisplayNumber(latestData.totalAsset - latestData.cumulativeInvestment)}`} color={latestData.totalAsset - latestData.cumulativeInvestment >= 0 ? 'text-red-600' : 'text-blue-600'} />
+            </div>
+
+            {/* Table Area */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-12">
+              <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
+                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                  <span className="text-[11px] font-bold text-slate-500 whitespace-nowrap">초기 원금</span>
+                  <input type="text" value={formatInputValue(activeAccount?.initialInvestment)} onChange={(e) => handleInitialInvestmentChange(e.target.value.replace(/[^0-9.,]/g, ''))} onBlur={(e) => handleInitialInvestmentBlur(e.target.value)} className="w-full sm:w-24 bg-transparent text-right border-none focus:ring-0 text-sm font-bold text-slate-800 outline-none" />
+                  <span className="text-[11px] font-bold text-slate-500">{currentSymbol}</span>
+                </div>
+                <button onClick={addRow} className="flex items-center justify-center gap-1 bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold shadow-sm hover:bg-blue-700 active:scale-95 transition-all"><Plus size={16} /> 내역 추가</button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse whitespace-nowrap border-2 border-slate-200">
+                  <thead>
+                    <tr className="text-slate-800 text-[10px] md:text-xs uppercase tracking-wider bg-slate-100 border-b-2 border-slate-300 font-bold">
+                      <th className="px-3 py-2.5 text-center border border-slate-200">날짜</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">주식 ({currentSymbol})</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">현금 ({currentSymbol})</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">입금 ({currentSymbol})</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">출금 ({currentSymbol})</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">원금 ({currentSymbol})</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">원금(%)</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">자산 ({currentSymbol})</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">자산(%)</th>
+                      <th className="px-3 py-2.5 text-center border border-slate-200 font-bold">삭제</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {processedRows.map((row) => (
+                      <tr key={row.id} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="px-3 py-2 text-center border border-slate-200 text-[13px]"><input type="date" value={row.date} onChange={(e) => handleRowChange(row.id, 'date', e.target.value)} className="bg-transparent border-none text-[12px] md:text-sm outline-none w-[105px] text-center" /></td>
+                        <EditableCell value={row.stockValue} onChange={(v) => handleRowChange(row.id, 'stockValue', v)} onBlur={(v) => handleBlur(row.id, 'stockValue', v)} format={formatInputValue} />
+                        <EditableCell value={row.cash} onChange={(v) => handleRowChange(row.id, 'cash', v)} onBlur={(v) => handleBlur(row.id, 'cash', v)} format={formatInputValue} />
+                        <EditableCell value={row.deposit} onChange={(v) => handleRowChange(row.id, 'deposit', v)} onBlur={(v) => handleBlur(row.id, 'deposit', v)} format={formatInputValue} />
+                        <EditableCell value={row.withdrawal} onChange={(v) => handleRowChange(row.id, 'withdrawal', v)} onBlur={(v) => handleBlur(row.id, 'withdrawal', v)} format={formatInputValue} />
+                        <td className="px-3 py-2 text-right font-bold text-slate-500 border border-slate-200 text-[12px] md:text-[13px]">{formatDisplayNumber(row.cumulativeInvestment)}</td>
+                        <td className={`px-3 py-2 text-right font-bold border border-slate-200 text-[12px] md:text-[13px] ${row.principalGrowthRate > 0 ? 'text-indigo-600' : 'text-pink-600'}`}>{row.principalGrowthRate.toFixed(2)}%</td>
+                        <td className="px-3 py-2 text-right font-bold text-slate-700 border border-slate-300 text-[12px] md:text-[13px]">{formatDisplayNumber(row.totalAsset)}</td>
+                        <td className={`px-3 py-2 text-right font-bold border border-slate-200 text-[12px] md:text-[13px] ${row.assetGrowthRate > 0 ? 'text-red-600' : 'text-blue-600'}`}>{row.assetGrowthRate.toFixed(2)}%</td>
+                        <td className="px-3 py-2 text-center border border-slate-200"><button onClick={() => deleteRow(row.id)} className="text-slate-300 hover:text-red-500 transition-colors p-1"><Trash2 size={14}/></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* User Manual Modal */}
+          {showManual && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+              <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[85vh] shadow-2xl flex flex-col overflow-hidden">
+                <div className="p-6 border-b bg-slate-50 flex justify-between items-center shrink-0">
+                  <h2 className="text-xl font-bold flex items-center gap-2"><Info className="text-blue-600" size={24} /> 이용 가이드</h2>
+                  <button onClick={() => setShowManual(false)} className="text-slate-400 hover:text-slate-600 transition-colors"><X size={20} /></button>
+                </div>
+                <div className="p-6 overflow-y-auto custom-scrollbar space-y-6 text-sm text-slate-600">
+                  <section><h3 className="font-bold text-slate-900 mb-2 text-base">데이터 저장 및 넘버링</h3><p>백업 시 파일명 뒤의 번호가 자동 증가합니다. 앱 실행 시 0001로 시작합니다.</p></section>
+                  <section><h3 className="font-bold text-slate-900 mb-2 text-base">차트 기간 필터</h3><p>차트 보기 화면 상단에서 시작일과 종료일을 입력하여 원하는 기간의 성과를 집중적으로 분석할 수 있습니다.</p></section>
+                </div>
+                <div className="p-4 bg-slate-50 shrink-0 border-t"><button onClick={() => setShowManual(false)} className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold hover:bg-slate-900 transition-colors">확인했습니다</button></div>
+              </div>
+            </div>
+          )}
+
+          {/* Chart Modal */}
+          {showChart && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-2 sm:p-4 animate-in fade-in duration-200">
+              <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[95vh] shadow-2xl flex flex-col overflow-hidden landscape-modal-max-height">
+                {/* Header with Date Inputs */}
+                <div className="p-3 sm:p-4 border-b bg-slate-50 flex flex-col gap-3 shrink-0 landscape-header-padding">
+                  <div className="flex justify-between items-center">
+                    <h2 className="text-base sm:text-lg md:text-xl font-bold flex items-center gap-2 text-slate-800">
+                      <TrendingUp className="text-indigo-600" size={20} /> 자산 성장 추이
+                    </h2>
+                    <button onClick={() => setShowChart(false)} className="text-slate-400 hover:text-slate-600 transition-colors"><X size={20} /></button>
+                  </div>
+                  
+                  {/* Date Filter Controls */}
+                  <div className="flex items-center gap-2 flex-wrap text-[11px] md:text-sm">
+                    <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-slate-200 shadow-sm">
+                      <Calendar size={12} className="text-slate-400" />
+                      <span className="text-slate-500 font-bold">시작</span>
+                      <input type="date" value={chartStartDate} onChange={(e) => setChartStartDate(e.target.value)} className="bg-transparent border-none focus:ring-0 outline-none text-slate-800 font-medium text-[11px] md:text-sm" />
+                    </div>
+                    <span className="text-slate-300">~</span>
+                    <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-slate-200 shadow-sm">
+                      <Calendar size={12} className="text-slate-400" />
+                      <span className="text-slate-500 font-bold">종료</span>
+                      <input type="date" value={chartEndDate} onChange={(e) => setChartEndDate(e.target.value)} className="bg-transparent border-none focus:ring-0 outline-none text-slate-800 font-medium text-[11px] md:text-sm" />
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="p-2 sm:p-4 bg-white overflow-y-auto landscape-modal-padding">
+                  <div className="overflow-x-auto custom-scrollbar">
+                    <div ref={chartRef} style={{ width: `${chartMinWidth}px`, backgroundColor: '#ffffff' }} className="min-h-[220px] md:min-h-[450px]">
+                      <div className="h-[55vh] min-h-[220px] max-h-[500px] landscape-chart-height">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={filteredChartData} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="date" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} dy={10} />
+                            <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}%`} />
+                            <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} formatter={(v) => [`${v.toFixed(2)}%`, "수익률"]} />
+                            <Legend verticalAlign="top" height={36} wrapperStyle={{ fontSize: '12px', paddingBottom: '10px' }} />
+                            <ReferenceLine y={0} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="5 5" />
+                            <Line type="monotone" dataKey="assetGrowthRate" name="자산(%)" stroke="#ef4444" strokeWidth={3} dot={{ fill: '#ef4444', r: 4 }} activeDot={{ r: 7 }} />
+                            <Line type="monotone" dataKey="principalGrowthRate" name="원금(%)" stroke="#6366f1" strokeWidth={3} dot={{ fill: '#6366f1', r: 4 }} activeDot={{ r: 7 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Footer with only Save Button */}
+                <div className="p-2 sm:p-3 bg-slate-50 border-t shrink-0 landscape-footer-padding">
+                  <button onClick={downloadChartImage} className="w-full bg-indigo-600 text-white py-2.5 rounded-xl font-bold transition-colors hover:bg-indigo-700 shadow-md text-sm flex items-center justify-center gap-2"><Image size={18} /> 이미지 저장 (JPG)</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {toastMsg && (
+            <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-lg flex items-center gap-3 z-50 animate-bounce-short">
+              <Check size={18} className="text-green-400" />
+              <span className="font-medium text-sm">{toastMsg}</span>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const Card = ({ icon, label, value, color = 'text-slate-800', subValue, subColor = 'text-slate-400' }) => (
+      <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
+        <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+          <span className="text-slate-500">{icon}</span>
+          <span className="text-slate-500 text-[10px] md:text-xs font-medium whitespace-nowrap">{label}</span>
+          {subValue && <span className={`text-[10px] md:text-xs font-bold ${subColor} ml-0.5`}>{subValue}</span>}
+        </div>
+        <div className={`text-base md:text-xl font-bold ${color} leading-tight`}>{value}</div>
+      </div>
+    );
+
+    const EditableCell = ({ value, onChange, onBlur, format }) => (
+      <td className="px-2 py-2 text-right border border-slate-200">
+        <input type="text" value={format(value)} onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ''))} onBlur={(e) => onBlur(e.target.value)} className="w-full min-w-[70px] max-w-[105px] bg-transparent text-right border-none focus:ring-0 text-[12px] md:text-sm font-medium outline-none" />
+      </td>
+    );
+
+    const root = createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
