@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>투자 자산 트래커</title>
+  <title>투자 자산 현황</title>
   
   <!-- 모듈 참조 오류 방지를 위한 Import Map -->
   <script type="importmap">
@@ -372,19 +372,6 @@
 
       const chartMinWidth = Math.max(800, filteredChartData.length * 80);
 
-      const exportCSV = () => {
-        if (!activeAccount) return;
-        const headers = ["날짜", "주식", "현금", "입금", "출금", "원금", "원금(%)", "자산", "자산(%)"];
-        const csvContent = [headers.join(","), ...processedRows.map(r => [r.date, toNum(r.stockValue), toNum(r.cash), toNum(r.deposit), toNum(r.withdrawal), r.cumulativeInvestment, r.principalGrowthRate, r.totalAsset, r.assetGrowthRate].join(","))].join("\n");
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(blob);
-        link.download = getFormattedFileName('csv', false);
-        link.click();
-        setToastMsg(`CSV 저장이 완료되었습니다.`);
-        setTimeout(() => setToastMsg(''), 3000);
-      };
-
       const copyForGoogleSheets = () => {
         if (!activeAccount) return;
         const headers = ["날짜", "주식", "현금", "입금", "출금", "원금", "원금(%)", "자산", "자산(%)"];
@@ -485,7 +472,7 @@
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2 text-slate-800">
                   <TrendingUp className="text-blue-600 w-6 h-6 md:w-8 md:h-8" /> 
-                  <h1 className="text-xl md:text-3xl font-bold">투자 자산 트래커</h1>
+                  <h1 className="text-xl md:text-3xl font-bold">투자 자산 현황</h1>
                   <div className="flex items-center gap-1 ml-1">
                     <span className="text-[10px] md:text-sm bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full shadow-sm">{APP_VERSION}</span>
                     <button onClick={() => setShowManual(true)} className="p-1 text-slate-400 hover:text-blue-600 transition-colors" title="이용 가이드"><Info size={18} className="md:w-5 md:h-5" /></button>
@@ -509,8 +496,6 @@
               <input type="file" accept=".json" ref={fileInputRef} onChange={importJSON} className="hidden" />
               <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 bg-white border border-slate-200 px-3 py-2.5 rounded-lg shadow-sm text-xs font-medium hover:bg-slate-50 transition-colors text-slate-700"><Upload size={16} /> 불러오기</button>
               <button onClick={exportJSON} className="flex items-center justify-center gap-2 bg-white border border-slate-200 px-3 py-2.5 rounded-lg shadow-sm text-xs font-medium hover:bg-slate-50 transition-colors text-slate-700"><Save size={16} /> 백업하기</button>
-              
-              <button onClick={exportCSV} className="hidden md:flex items-center justify-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg shadow-sm text-xs font-medium hover:bg-slate-50 transition-colors text-slate-700"><Download size={16} /> CSV 저장</button>
             </div>
 
             {/* Account Tabs */}
@@ -526,9 +511,26 @@
 
             {/* Summary Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-              <Card icon={<Calculator size={14}/>} label="원금" value={`${currentSymbol}${formatDisplayNumber(latestData.cumulativeInvestment)}`} subValue={`${latestData.principalGrowthRate > 0 ? '+' : ''}${latestData.principalGrowthRate.toFixed(2)}%`} subColor={latestData.principalGrowthRate > 0 ? 'text-indigo-500' : 'text-pink-500'} />
-              <Card icon={<Wallet size={14}/>} label="자산" value={`${currentSymbol}${formatDisplayNumber(latestData.totalAsset)}`} subValue={`${latestData.assetGrowthRate > 0 ? '+' : ''}${latestData.assetGrowthRate.toFixed(2)}%`} subColor={latestData.assetGrowthRate > 0 ? 'text-red-500' : 'text-blue-500'} />
-              <Card icon={<ArrowUpCircle size={14}/>} label="누적 손익" value={`${latestData.totalAsset - latestData.cumulativeInvestment >= 0 ? '+' : ''}${currentSymbol}${formatDisplayNumber(latestData.totalAsset - latestData.cumulativeInvestment)}`} color={latestData.totalAsset - latestData.cumulativeInvestment >= 0 ? 'text-red-600' : 'text-blue-600'} />
+              <Card 
+                icon={<Calculator size={14}/>} 
+                label="원금" 
+                value={`${currentSymbol}${formatDisplayNumber(latestData.cumulativeInvestment)}`} 
+                subValue={`${latestData.principalGrowthRate > 0 ? '+' : ''}${latestData.principalGrowthRate.toFixed(2)}%`} 
+                subColor={latestData.principalGrowthRate > 0 ? 'text-red-500' : latestData.principalGrowthRate < 0 ? 'text-blue-500' : 'text-slate-500'} 
+              />
+              <Card 
+                icon={<Wallet size={14}/>} 
+                label="자산" 
+                value={`${currentSymbol}${formatDisplayNumber(latestData.totalAsset)}`} 
+                subValue={`${latestData.assetGrowthRate > 0 ? '+' : ''}${latestData.assetGrowthRate.toFixed(2)}%`} 
+                subColor={latestData.assetGrowthRate > 0 ? 'text-red-500' : latestData.assetGrowthRate < 0 ? 'text-blue-500' : 'text-slate-500'} 
+              />
+              <Card 
+                icon={<ArrowUpCircle size={14}/>} 
+                label="누적 손익" 
+                value={`${latestData.totalAsset - latestData.cumulativeInvestment > 0 ? '+' : ''}${currentSymbol}${formatDisplayNumber(latestData.totalAsset - latestData.cumulativeInvestment)}`} 
+                color={latestData.totalAsset - latestData.cumulativeInvestment > 0 ? 'text-red-600' : latestData.totalAsset - latestData.cumulativeInvestment < 0 ? 'text-blue-600' : 'text-slate-800'} 
+              />
             </div>
 
             {/* Table Area */}
@@ -566,9 +568,9 @@
                         <EditableCell value={row.deposit} onChange={(v) => handleRowChange(row.id, 'deposit', v)} onBlur={(v) => handleBlur(row.id, 'deposit', v)} format={formatInputValue} />
                         <EditableCell value={row.withdrawal} onChange={(v) => handleRowChange(row.id, 'withdrawal', v)} onBlur={(v) => handleBlur(row.id, 'withdrawal', v)} format={formatInputValue} />
                         <td className="px-3 py-2 text-right font-bold text-slate-500 border border-slate-200 text-[12px] md:text-[13px]">{formatDisplayNumber(row.cumulativeInvestment)}</td>
-                        <td className={`px-3 py-2 text-right font-bold border border-slate-200 text-[12px] md:text-[13px] ${row.principalGrowthRate > 0 ? 'text-indigo-600' : 'text-pink-600'}`}>{row.principalGrowthRate.toFixed(2)}%</td>
+                        <td className={`px-3 py-2 text-right font-bold border border-slate-200 text-[12px] md:text-[13px] ${row.principalGrowthRate > 0 ? 'text-red-600' : row.principalGrowthRate < 0 ? 'text-blue-600' : 'text-slate-600'}`}>{row.principalGrowthRate > 0 ? '+' : ''}{row.principalGrowthRate.toFixed(2)}%</td>
                         <td className="px-3 py-2 text-right font-bold text-slate-700 border border-slate-300 text-[12px] md:text-[13px]">{formatDisplayNumber(row.totalAsset)}</td>
-                        <td className={`px-3 py-2 text-right font-bold border border-slate-200 text-[12px] md:text-[13px] ${row.assetGrowthRate > 0 ? 'text-red-600' : 'text-blue-600'}`}>{row.assetGrowthRate.toFixed(2)}%</td>
+                        <td className={`px-3 py-2 text-right font-bold border border-slate-200 text-[12px] md:text-[13px] ${row.assetGrowthRate > 0 ? 'text-red-600' : row.assetGrowthRate < 0 ? 'text-blue-600' : 'text-slate-600'}`}>{row.assetGrowthRate > 0 ? '+' : ''}{row.assetGrowthRate.toFixed(2)}%</td>
                         <td className="px-3 py-2 text-center border border-slate-200"><button onClick={() => deleteRow(row.id)} className="text-slate-300 hover:text-red-500 transition-colors p-1"><Trash2 size={14}/></button></td>
                       </tr>
                     ))}
