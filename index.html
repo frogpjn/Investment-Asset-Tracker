@@ -87,7 +87,7 @@
     import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
 
     // 앱 버전 상수
-    const APP_VERSION = "v1.1.6";
+    const APP_VERSION = "v1.1.7";
 
     // Firebase 로컬 대응 초기화 로직
     let app, auth, db;
@@ -133,6 +133,9 @@
       const [showManual, setShowManual] = useState(false);
       const [showChart, setShowChart] = useState(false);
       
+      // 환율 상태
+      const [exchangeRate, setExchangeRate] = useState(null);
+
       // 계산기 상태
       const [showCalculator, setShowCalculator] = useState(false);
       const [calcDisplay, setCalcDisplay] = useState('0');
@@ -153,6 +156,22 @@
         KRW: { symbol: '₩', suffix: '원', locale: 'ko-KR', decimals: 0 },
         USD: { symbol: '$', suffix: '달러', locale: 'en-US', decimals: 2 }
       };
+
+      // 초기 환율 정보 가져오기
+      useEffect(() => {
+        const fetchExchangeRate = async () => {
+          try {
+            const res = await fetch('https://open.er-api.com/v6/latest/USD');
+            const data = await res.json();
+            if (data && data.rates && data.rates.KRW) {
+              setExchangeRate(data.rates.KRW);
+            }
+          } catch (error) {
+            console.error('환율 정보를 가져오는데 실패했습니다:', error);
+          }
+        };
+        fetchExchangeRate();
+      }, []);
 
       useEffect(() => {
         const timer = setTimeout(() => {
@@ -574,6 +593,14 @@
         setTimeout(() => setToastMsg(''), 3000);
       };
 
+      // USD 원화 환산 렌더링 헬퍼 함수
+      const renderConverted = (val, isPnL = false) => {
+        if (currentCurrency !== 'USD' || !exchangeRate) return null;
+        const krwVal = Math.floor(Math.abs(val) * exchangeRate);
+        const sign = val < 0 ? '-' : (val > 0 && isPnL ? '+' : '');
+        return `≈ ${sign}₩${new Intl.NumberFormat('ko-KR').format(krwVal)}`;
+      };
+
       if (isLoading) {
         return (
           <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -639,6 +666,7 @@
                 icon={<Calculator size={14}/>} 
                 label="원금" 
                 value={`${currentSymbol}${formatDisplayNumber(latestData.cumulativeInvestment)}`} 
+                convertedValue={renderConverted(latestData.cumulativeInvestment)}
                 subValue={`${latestData.principalGrowthRate > 0 ? '+' : ''}${latestData.principalGrowthRate.toFixed(2)}%`} 
                 subColor={latestData.principalGrowthRate > 0 ? 'text-red-500' : latestData.principalGrowthRate < 0 ? 'text-blue-500' : 'text-slate-500'} 
               />
@@ -646,6 +674,7 @@
                 icon={<Wallet size={14}/>} 
                 label="자산" 
                 value={`${currentSymbol}${formatDisplayNumber(latestData.totalAsset)}`} 
+                convertedValue={renderConverted(latestData.totalAsset)}
                 subValue={`${latestData.assetGrowthRate > 0 ? '+' : ''}${latestData.assetGrowthRate.toFixed(2)}%`} 
                 subColor={latestData.assetGrowthRate > 0 ? 'text-red-500' : latestData.assetGrowthRate < 0 ? 'text-blue-500' : 'text-slate-500'} 
               />
@@ -653,6 +682,7 @@
                 icon={<ArrowUpCircle size={14}/>} 
                 label="누적 손익" 
                 value={`${latestData.totalAsset - latestData.cumulativeInvestment > 0 ? '+' : ''}${currentSymbol}${formatDisplayNumber(latestData.totalAsset - latestData.cumulativeInvestment)}`} 
+                convertedValue={renderConverted(latestData.totalAsset - latestData.cumulativeInvestment, true)}
                 color={latestData.totalAsset - latestData.cumulativeInvestment > 0 ? 'text-red-600' : latestData.totalAsset - latestData.cumulativeInvestment < 0 ? 'text-blue-600' : 'text-slate-800'} 
               />
             </div>
@@ -794,6 +824,7 @@
                 <div className="p-6 overflow-y-auto custom-scrollbar space-y-6 text-sm text-slate-600">
                   <section><h3 className="font-bold text-slate-900 mb-2 text-base">데이터 저장 및 넘버링</h3><p>백업 시 파일명 뒤의 번호가 자동 증가합니다. 앱 실행 시 0001로 시작합니다.</p></section>
                   <section><h3 className="font-bold text-slate-900 mb-2 text-base">차트 기간 필터</h3><p>차트 보기 화면 상단에서 시작일과 종료일을 입력하여 원하는 기간의 성과를 집중적으로 분석할 수 있습니다.</p></section>
+                  <section><h3 className="font-bold text-slate-900 mb-2 text-base">달러(USD) 환산</h3><p>달러를 선택하면 최신 환율 정보(무료 API)를 가져와 원화 환산 금액을 자동으로 요약 카드에 표시합니다.</p></section>
                 </div>
                 <div className="p-4 bg-slate-50 shrink-0 border-t"><button onClick={() => setShowManual(false)} className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold hover:bg-slate-900 transition-colors">확인했습니다</button></div>
               </div>
@@ -868,14 +899,17 @@
       );
     };
 
-    const Card = ({ icon, label, value, color = 'text-slate-800', subValue, subColor = 'text-slate-400' }) => (
+    const Card = ({ icon, label, value, color = 'text-slate-800', subValue, subColor = 'text-slate-400', convertedValue }) => (
       <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-md transition-shadow">
         <div className="flex items-center gap-1.5 mb-2 flex-wrap">
           <span className="text-slate-500">{icon}</span>
           <span className="text-slate-500 text-[10px] md:text-xs font-medium whitespace-nowrap">{label}</span>
           {subValue && <span className={`text-[10px] md:text-xs font-bold ${subColor} ml-0.5`}>{subValue}</span>}
         </div>
-        <div className={`text-base md:text-xl font-bold ${color} leading-tight`}>{value}</div>
+        <div>
+          <div className={`text-base md:text-xl font-bold ${color} leading-tight`}>{value}</div>
+          {convertedValue && <div className="text-[10px] md:text-[11px] font-medium text-slate-400 mt-1">{convertedValue}</div>}
+        </div>
       </div>
     );
 
